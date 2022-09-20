@@ -1,0 +1,135 @@
+#!/bin/bash
+
+# load environments
+SRCDIR="$( dirname "${BASH_SOURCE[0]}" )"
+source $SRCDIR/settings
+unset XDG_RUNTIME_DIR
+exec_command() {
+    singularity exec $SRCDIR/rdkit-django.img /bin/bash -c "source /initrc; $*"
+}
+exec_db() {
+    singularity exec instance://a2g2_db "$@"
+}
+create_table() {
+    if exec_db psql -lqt | cut -d \| -f 1 | grep -qw $@; then
+        echo "database $@ already created."
+    else
+        echo "creating database $@ ..."
+        exec_db createdb $@
+    fi
+    exec_command "export DB_NAME=$@; django-admin migrate"
+}
+
+# for singularity version change
+SV="$(singularity --version)"
+SV="${SV##* }"
+MAJOR_VERSION=${SV%%.*}
+if [ $MAJOR_VERSION == '2' ]; then
+    instance_str="instance."
+else
+    instance_str="instance "
+fi
+
+help_message='a2g2 commands:
+    shell: shell into jupyter lab in rdkit-django, command manage bind to manage.py
+    manage [options]: run manage.py [options] in rdkit-django
+    jupyter: start jupyter lab from rdkit-django
+    exec <commands>: run commands in rdkit-django
+    test: run a2g2 test
+    pg: postgres commands:
+        pg start: start postgres service, will auto create database $DB_NAME, error occur, run again
+        pg stop: shutdown postgres service
+        pg list: list singularity instance services
+        pg exec <commands>: run commands in postgres service
+    db: a2g2 database commands:
+        db list: list postgres databases
+        db create <db-name>: create new database
+        db drop <db-name>: delete database'
+
+# run commands
+if [ "$1" == "shell" ]; then
+    singularity shell -B "$PYTHONPATH/manage.py:/bin/manage" $SRCDIR/rdkit-django.img
+
+elif [ "$1" == "manage" ]; then
+    exec_command "$PYTHONPATH/manage.py ${*:2}"
+
+elif [ "$1" == "jupyter" ]; then
+    echo 'Start Jupyter ...'
+    echo 'Go to URL <host>/lab to access lab style.'
+    echo 'Go to URL <host>/tree to access notebook style.'
+    exec_command "jupyter lab ${*:2}"
+
+elif [ "$1" == "exec" ]; then
+    exec_command "${*:2}"
+
+elif [ "$1" == "test" ]; then
+    test_db=test_run_db
+    create_table $test_db
+    exec_command "$PYTHONPATH/manage.py molgen test $PYTHONPATH/molgen/tests/fragments_small.json --recipe=test"
+    echo "deleting database $test_db ..."
+    exec_db dropdb $test_db
+
+# postgres sub commands
+elif [ "$1" == "pg" ]; then
+    if [ "$2" == "start" ]; then
+        if [ -z ${HOST_PGDATA+x} ]; then
+            export HOST_PGDATA=$SRCDIR/pgdata
+        fi
+        if [ ! -d $SRCDIR/.run ]; then
+            mkdir $SRCDIR/.run
+        fi
+        
+        sing_bind="$SRCDIR/.run:/var/run/postgresql,$SRCDIR/settings:/postgresrc,$HOST_PGDATA:/var/lib/postgresql/data"
+        singularity ${instance_str}start --bind $sing_bind $SRCDIR/postgres.img a2g2_db
+        echo "starting postgres service ..."
+        sleep 5
+        create_table $DB_NAME
+
+
+    elif [ "$2" == "stop" ]; then
+        singularity ${instance_str}stop a2g2_db
+        if [ "$instance_str" == "instance " ]; then
+            echo "If cannot stop instance, remove json file under .singularity/instances"
+        fi
+
+    elif [ "$2" == "list" ]; then
+        singularity ${instance_str}list
+
+    elif [ "$2" == "exec" ]; then
+        exec_db /bin/bash -c "${*:3}"
+    else
+        echo "$help_message"
+    fi
+
+
+# database commands
+elif [ "$1" == "db" ]; then
+
+    if [ "$2" == "list" ]; then
+        exec_db psql -l
+
+    # db create
+    elif [ "$2" == "create" ]; then
+        if [ -z "$3" ]; then
+            echo "$help_message"
+        else
+            create_table $3
+        fi
+
+    elif [ "$2" == "drop" ]; then
+        if [ -z "$3" ]; then
+            echo "$help_message"
+        else
+            echo "delete db $3 ..."
+            exec_db dropdb $3
+        fi
+
+    else
+        echo "$help_message"
+    fi
+
+# help message
+else
+    echo "$help_message"
+fi
+
