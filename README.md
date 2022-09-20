@@ -1,4 +1,5 @@
-#a2g2
+A2G2
+====
 
 To setup environment for a2g2 look in  `environments/`
 
@@ -9,7 +10,7 @@ Contact the group to resolve package issues.
 
 
 Licenses
-========
+--------
 
 All acknowledgement, copyright, and license goes to the main contributors:
 - Alan Aspuru-Guzik and the group (alan@aspuru.com)
